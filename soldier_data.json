@@ -1,38 +1,9 @@
 {
-  "Davy": {
-    "name": "Davy Wahyu",
-    "nrp": "123456",
-    "rank": "Sertu",
-    "unit": "Yonif 400"
-  },
-  "Prajurit1": {
-    "name": "Seto",
-    "nrp": "654321",
-    "rank": "Serda",
-    "unit": "Yonif 400"
-  },
-  "3": {
-    "name": "Dafa",
-    "nrp": "098766",
-    "rank": "Sertu",
-    "unit": "Yonil 400   "
-  },
-  "tes": {
-    "name": "TES",
-    "nrp": "1222",
-    "rank": "SAWER",
-    "unit": "SAWER"
-  },
   "davy": {
     "name": "DAVY",
     "nrp": "123456",
-    "rank": "SERDU",
-    "unit": "YONIL 400"
-  },
-  "dafa": {
-    "name": "DAFA",
-    "nrp": "098765",
-    "rank": "SERLOK",
-    "unit": "UPIN"
+    "rank": "SERBU",
+    "unit": "YONIL",
+    "code": "AB"
   }
 }

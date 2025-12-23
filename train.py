@@ -8,67 +8,107 @@ import pickle
 import os
 
 print("="*60)
-print("🚀 TRAINING LSTM MODEL - GESTURE RECOGNITION")
+print("🚀 TRAINING LSTM MODEL - GESTURE RECOGNITION (neutral + A-Z)")
 print("="*60)
 
-# ====== 1. Load dataset ======
+# ============================================================
+# 1. Load semua dataset (neutral + A-Z)
+# ============================================================
 print("\n[1/6] Loading dataset...")
-try:
-    neutral_df = pd.read_csv('neutral.txt')
-    A_df       = pd.read_csv('A.txt')
-    L_df       = pd.read_csv('L.txt')
-    print(f"✅ neutral: {len(neutral_df)} frames")
-    print(f"✅ A: {len(A_df)} frames")
-    print(f"✅ L: {len(L_df)} frames")
-except FileNotFoundError as e:
-    print(f"❌ ERROR: File tidak ditemukan - {e}")
-    print("   Jalankan hands_data_generation_new.py terlebih dahulu!")
+
+labels = ['neutral'] + [chr(i) for i in range(ord('A'), ord('D') + 1)]
+dfs = {}
+missing_files = []
+
+for lbl in labels:
+    fname = f"{lbl}.txt"
+    if os.path.exists(fname):
+        df = pd.read_csv(fname)
+        dfs[lbl] = df
+        print(f"✅ {lbl:7s}: {len(df)} frames -> {fname}")
+    else:
+        missing_files.append(fname)
+
+if missing_files:
+    print("\n❌ ERROR: Ada file yang belum ada:")
+    for f in missing_files:
+        print(f"   - {f}")
+    print("\n   Pastikan semua gesture sudah dikumpulkan dengan program data collection.")
     exit()
 
-no_of_timesteps = 20   # sliding window
+print(f"\nTotal kelas: {len(labels)}")
+
+# ============================================================
+# 2. Build sequence (sliding window) untuk semua kelas
+# ============================================================
+no_of_timesteps = 20   # sliding window length
 X, y = [], []
 
-def build_seq(df, label):
+print("\n[2/6] Building sequences...")
+
+label_to_id = {lbl: idx for idx, lbl in enumerate(labels)}
+# contoh: {'neutral':0, 'A':1, 'B':2, ... 'Z':26}
+
+def build_seq(df, label_id):
     data = df.values
     n = len(data)
     for i in range(no_of_timesteps, n):
         X.append(data[i-no_of_timesteps:i, :])
-        y.append(label)
+        y.append(label_id)
 
-print("\n[2/6] Building sequences...")
-build_seq(neutral_df, 0)
-build_seq(A_df, 1)
-build_seq(L_df, 2)
+for lbl, df in dfs.items():
+    lbl_id = label_to_id[lbl]
+    build_seq(df, lbl_id)
+    print(f"   Kelas {lbl:7s} -> label {lbl_id:2d}, sequence: {len(df) - no_of_timesteps}")
 
 X = np.array(X)
 y = np.array(y)
-print(f"✅ X shape: {X.shape}")
-print(f"✅ y shape: {y.shape}")
 
-# ====== 2. Split train-test ======
+print(f"\n✅ X shape: {X.shape}")   # (samples, timesteps, features)
+print(f"✅ y shape: {y.shape}")     # (samples,)
+
+# Safety check
+if X.shape[0] == 0:
+    print("\n❌ ERROR: Tidak ada sequence yang terbentuk. Cek jumlah frame / no_of_timesteps.")
+    exit()
+
+# ============================================================
+# 3. Split train-test
+# ============================================================
 print("\n[3/6] Splitting dataset...")
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, shuffle=True, stratify=y, random_state=42
-)
-print(f"✅ Train: {len(X_train)} samples")
-print(f"✅ Test: {len(X_test)} samples")
 
-# ====== 3. Build LSTM model (OPTIMIZED) ======
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    shuffle=True,
+    stratify=y,
+    random_state=42
+)
+
+print(f"✅ Train: {len(X_train)} samples")
+print(f"✅ Test : {len(X_test)} samples")
+
+# ============================================================
+# 4. Build LSTM model (27 kelas)
+# ============================================================
 print("\n[4/6] Building LSTM model...")
+
+num_classes = len(labels)  # 27
+
 model = Sequential([
     LSTM(128, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
     BatchNormalization(),
     Dropout(0.3),
-    
+
     LSTM(64, return_sequences=True),
     BatchNormalization(),
     Dropout(0.3),
-    
+
     LSTM(32),
     BatchNormalization(),
     Dropout(0.2),
-    
-    Dense(3, activation='softmax')
+
+    Dense(num_classes, activation='softmax')
 ])
 
 model.compile(
@@ -80,8 +120,11 @@ model.compile(
 print("✅ Model compiled")
 model.summary()
 
-# ====== 4. Train with callbacks ======
+# ============================================================
+# 5. Train dengan callbacks
+# ============================================================
 print("\n[5/6] Training model...")
+
 early_stop = EarlyStopping(
     monitor='val_loss',
     patience=10,
@@ -106,31 +149,39 @@ history = model.fit(
     verbose=1
 )
 
-# ====== 5. Evaluate ======
+# ============================================================
+# 6. Evaluate
+# ============================================================
 print("\n[6/6] Evaluating model...")
 loss, accuracy = model.evaluate(X_test, y_test, verbose=0)
+
 print(f"\n{'='*60}")
-print(f"📊 HASIL TRAINING:")
+print("📊 HASIL TRAINING:")
 print(f"{'='*60}")
-print(f"  Test Loss: {loss:.4f}")
-print(f"  Test Accuracy: {accuracy*100:.2f}%")
+print(f"  Test Loss     : {loss:.4f}")
+print(f"  Test Accuracy : {accuracy*100:.2f}%")
 print(f"{'='*60}")
 
-# ====== 6. Save model + labels ======
-print("\n💾 Saving model...")
-model.save('gesture_model.h5')
+# ============================================================
+# 7. Save model + label map
+# ============================================================
+print("\n💾 Saving model & labels...")
 
-label_map = {0: 'neutral', 1: 'A', 2: 'L'}
-with open('gesture_labels.pkl', 'wb') as f:
+model.save('gesture_model_az.h5')
+
+# label_map: id -> label (kebalikan dari label_to_id)
+label_map = {idx: lbl for lbl, idx in label_to_id.items()}
+
+with open('gesture_labels_az.pkl', 'wb') as f:
     pickle.dump(label_map, f)
 
-print(f"✅ gesture_model.h5 saved")
-print(f"✅ gesture_labels.pkl saved")
+print("✅ gesture_model_az.h5 saved")
+print("✅ gesture_labels_az.pkl saved")
 
 print("\n" + "="*60)
-print("🎉 TRAINING SELESAI!")
+print("🎉 TRAINING SELESAI (neutral + A-Z)!")
 print("="*60)
 print("📌 Langkah berikutnya:")
-print("   1. Test dengan test_gesture_live.py")
-print("   2. Jika akurasi bagus, jalankan weapon_access_system.py")
+print("  1. Sesuaikan script live testing supaya load gesture_model_az.h5")
+print("  2. Gunakan label_map baru dari gesture_labels_az.pkl")
 print("="*60)

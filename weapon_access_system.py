@@ -52,91 +52,41 @@ def draw_text_with_outline(img, text, pos, font, scale, color, thickness):
     cv2.putText(img, text, (x, y), font, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
     cv2.putText(img, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
 
-def draw_animated_popup(frame, title, subtitle, progress=1.0, status="success"):
-    """Draw modern animated popup with progress bar"""
+def draw_animated_popup(frame, title, subtitle, progress=1.0, status="success", soldier_info=None):
+    """Draw modern animated popup with progress bar and optional soldier info"""
     h, w = frame.shape[:2]
     
-    box_w = 800
-    box_h = 300
+    # Adjust box size if showing detailed info
+    if soldier_info and status == "success":
+        box_w = 1000
+        box_h = 520
+    else:
+        box_w = 800
+        box_h = 300
+    
     box_x = (w - box_w) // 2
     box_y = (h - box_h) // 2
     
     if status == "success":
-        box_color = (0, 180, 0)
+        box_color = (0, 130, 0)  # Darker green
         title_color = (255, 255, 255)
         border_color = (0, 255, 0)
+        accent_color = (0, 255, 0)
     elif status == "detected":
         box_color = (0, 140, 255)
         title_color = (255, 255, 255)
         border_color = (0, 200, 255)
+        accent_color = (0, 200, 255)
     elif status == "failed":
         box_color = (0, 0, 200)
         title_color = (255, 255, 255)
         border_color = (0, 100, 255)
+        accent_color = (0, 100, 255)
     else:
         box_color = (60, 60, 60)
         title_color = (255, 255, 255)
         border_color = (150, 150, 150)
-    
-    # Shadow
-    shadow_offset = 10
-    overlay = frame.copy()
-    cv2.rectangle(overlay, 
-                  (box_x + shadow_offset, box_y + shadow_offset), 
-                  (box_x + box_w + shadow_offset, box_y + box_h + shadow_offset),
-                  (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
-    
-    # Main box
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), box_color, -1)
-    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
-    
-    # Border
-    cv2.rectangle(frame, (box_x-2, box_y-2), (box_x + box_w+2, box_y + box_h+2), border_color, 6)
-    cv2.rectangle(frame, (box_x, box_y), (box_x + box_w, box_y + box_h), (255, 255, 255), 2)
-    
-    # Icon
-    icon_y = box_y + 60
-    icon_x = box_x + box_w // 2
-    if status == "success":
-        cv2.circle(frame, (icon_x, icon_y), 35, (255, 255, 255), 4)
-        cv2.line(frame, (icon_x - 15, icon_y), (icon_x - 5, icon_y + 15), (255, 255, 255), 4)
-        cv2.line(frame, (icon_x - 5, icon_y + 15), (icon_x + 15, icon_y - 10), (255, 255, 255), 4)
-    elif status == "detected":
-        cv2.circle(frame, (icon_x, icon_y), 35, (255, 255, 255), 4)
-        cv2.line(frame, (icon_x, icon_y - 15), (icon_x, icon_y + 5), (255, 255, 255), 5)
-        cv2.circle(frame, (icon_x, icon_y + 15), 3, (255, 255, 255), -1)
-    elif status == "failed":
-        cv2.circle(frame, (icon_x, icon_y), 35, (255, 255, 255), 4)
-        cv2.line(frame, (icon_x - 12, icon_y - 12), (icon_x + 12, icon_y + 12), (255, 255, 255), 5)
-        cv2.line(frame, (icon_x + 12, icon_y - 12), (icon_x - 12, icon_y + 12), (255, 255, 255), 5)
-    
-    # Title
-    title_size = cv2.getTextSize(title, cv2.FONT_HERSHEY_DUPLEX, 1.8, 3)[0]
-    title_x = box_x + (box_w - title_size[0]) // 2
-    title_y = box_y + 140
-    cv2.putText(frame, title, (title_x, title_y), 
-                cv2.FONT_HERSHEY_DUPLEX, 1.8, title_color, 3, cv2.LINE_AA)
-    
-    # Subtitle
-    subtitle_size = cv2.getTextSize(subtitle, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)[0]
-    subtitle_x = box_x + (box_w - subtitle_size[0]) // 2
-    subtitle_y = box_y + 190
-    cv2.putText(frame, subtitle, (subtitle_x, subtitle_y), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2, cv2.LINE_AA)
-    
-    # Progress bar
-    if progress < 1.0:
-        bar_y = box_y + box_h - 40
-        bar_x = box_x + 50
-        bar_w = box_w - 100
-        bar_h = 20
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
-        progress_w = int(bar_w * progress)
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + progress_w, bar_y + bar_h), border_color, -1)
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (255, 255, 255), 2)
-
+        accent_color = (150, 150, 150)
 # ================== WEAPON ACCESS SYSTEM ==================
 class WeaponAccessSystem:
     def __init__(self):

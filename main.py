@@ -6,26 +6,28 @@ import time
 import json
 import csv
 from datetime import datetime
-
 import numpy as np
 import mediapipe as mp
 import face_recognition
 import pickle
 from tensorflow.keras.models import load_model
+from collections import deque
 
 # ================== CONFIG ==================
-
 CAM_INDEX = 0
 FRAME_W = 1280
 FRAME_H = 720
 
 ACCESS_RECORDS_FILE = "weapon_access_records.csv"
 SOLDIER_DATA_FILE = "soldier_data.json"
-SECRET_GESTURE_SEQUENCE = ["A", "L"]
+
+# SECRET_GESTURE_SEQUENCE tidak lagi hard-coded;
+# akan diisi mengikuti kode prajurit yang match.
+SECRET_GESTURE_SEQUENCE = []
 
 # ===== GESTURE MODEL (LSTM) =====
-GESTURE_MODEL_PATH = './gesture_model.h5'
-GESTURE_LABELS_PATH = './gesture_labels.pkl'
+GESTURE_MODEL_PATH = './gesture_model_az.h5'      # model neutral + A-Z
+GESTURE_LABELS_PATH = './gesture_labels_az.pkl'   # label map neutral + A-Z
 gesture_model = None
 gesture_labels = {}
 NO_OF_TIMESTEPS = 20
@@ -41,8 +43,8 @@ mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
-    min_detection_confidence=0.4,
-    min_tracking_confidence=0.4
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
 mp_draw = mp.solutions.drawing_utils
 
@@ -78,17 +80,30 @@ class Button:
 
 # ================== HELPER FUNCTIONS ==================
 def draw_text_with_outline(img, text, pos, font, scale, color, thickness):
-    """Draw text with black outline for better visibility"""
     x, y = pos
     cv2.putText(img, text, (x, y), font, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
     cv2.putText(img, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
 
-def draw_animated_popup(frame, title, subtitle, progress=1.0, status="success"):
-    """Draw modern animated popup with progress bar"""
+def parse_code_string(code_str):
+    """
+    "AB" -> ["A", "B"]
+    "KZE" -> ["K", "Z", "E"]
+    """
+    code_str = code_str.strip().upper()
+    return [c for c in code_str if 'A' <= c <= 'Z']
+
+
+def draw_animated_popup(frame, title, subtitle, progress=1.0, status="success", soldier_info=None):
+    """Draw modern animated popup with progress bar and optional soldier info"""
     h, w = frame.shape[:2]
     
-    box_w = 800
-    box_h = 300
+    if soldier_info and status == "success":
+        box_w = 900
+        box_h = 450
+    else:
+        box_w = 800
+        box_h = 300
+    
     box_x = (w - box_w) // 2
     box_y = (h - box_h) // 2
     
@@ -151,6 +166,45 @@ def draw_animated_popup(frame, title, subtitle, progress=1.0, status="success"):
     cv2.putText(frame, subtitle, (subtitle_x, subtitle_y), 
                 cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2, cv2.LINE_AA)
     
+    if soldier_info and status == "success":
+        info_y_start = box_y + 230
+        line_height = 35
+        label_x = box_x + 80
+        value_x = box_x + 280
+        
+        cv2.line(frame, (box_x + 50, info_y_start - 10), 
+                (box_x + box_w - 50, info_y_start - 10), (255, 255, 255), 2)
+        
+        cv2.putText(frame, "Nama", (label_x, info_y_start), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+        cv2.putText(frame, f": {soldier_info['name']}", (value_x, info_y_start), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        cv2.putText(frame, "NRP", (label_x, info_y_start + line_height), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+        cv2.putText(frame, f": {soldier_info['nrp']}", (value_x, info_y_start + line_height), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        cv2.putText(frame, "Pangkat", (label_x, info_y_start + line_height * 2), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+        cv2.putText(frame, f": {soldier_info['rank']}", (value_x, info_y_start + line_height * 2), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        cv2.putText(frame, "Kesatuan", (label_x, info_y_start + line_height * 3), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+        cv2.putText(frame, f": {soldier_info['unit']}", (value_x, info_y_start + line_height * 3), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        cv2.line(frame, (box_x + 50, info_y_start + line_height * 3 + 20), 
+                (box_x + box_w - 50, info_y_start + line_height * 3 + 20), (255, 255, 255), 1)
+        
+        datetime_y = info_y_start + line_height * 4 + 10
+        datetime_text = soldier_info['datetime']
+        datetime_size = cv2.getTextSize(datetime_text, cv2.FONT_HERSHEY_DUPLEX, 0.9, 2)[0]
+        datetime_x = box_x + (box_w - datetime_size[0]) // 2
+        cv2.putText(frame, datetime_text, (datetime_x, datetime_y), 
+                   cv2.FONT_HERSHEY_DUPLEX, 0.9, (0, 255, 255), 2)
+    
     if progress < 1.0:
         bar_y = box_y + box_h - 40
         bar_x = box_x + 50
@@ -171,9 +225,10 @@ class RegistrationSystem:
             'full_name': '',
             'nrp': '',
             'rank': '',
-            'unit': ''
+            'unit': '',
+            'code': ''          # kode gesture personal, contoh "A,B" atau "K,Z,E"
         }
-        self.fields = ['full_name', 'nrp', 'rank', 'unit']
+        self.fields = ['full_name', 'nrp', 'rank', 'unit', 'code']
         self.field_index = 0
         self.show_registration_success = False
         self.registration_success_time = 0
@@ -185,7 +240,6 @@ class RegistrationSystem:
         self.keyboard_buttons = []
         
     def start_registration(self):
-        """Mulai mode pendaftaran"""
         self.is_registering = True
         self.capture_countdown = 0
         self.captured_frame = None
@@ -194,7 +248,8 @@ class RegistrationSystem:
             'full_name': '',
             'nrp': '',
             'rank': '',
-            'unit': ''
+            'unit': '',
+            'code': ''
         }
         self.field_index = 0
         self.setup_ui()
@@ -203,8 +258,6 @@ class RegistrationSystem:
         print("="*50)
     
     def setup_ui(self):
-        """Setup buttons untuk UI"""
-        # Navigation buttons with text instead of arrows
         self.buttons['up'] = Button(20, 500, 60, 50, "UP", (70, 70, 70))
         self.buttons['down'] = Button(90, 500, 60, 50, "DN", (70, 70, 70))
         self.buttons['delete'] = Button(160, 500, 80, 50, "DEL", (150, 50, 50))
@@ -212,7 +265,6 @@ class RegistrationSystem:
         self.buttons['submit'] = Button(20, 620, 220, 50, "KIRIM", (0, 150, 0))
         self.buttons['cancel'] = Button(20, 680, 220, 50, "BATAL", (150, 50, 50))
         
-        # Virtual keyboard
         keys = [
             ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
             ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
@@ -229,7 +281,7 @@ class RegistrationSystem:
         
         for row_idx, row in enumerate(keys):
             row_buttons = []
-            x_offset = start_x + (row_idx * 20)  # Offset for centered layout
+            x_offset = start_x + (row_idx * 20)
             for col_idx, key in enumerate(row):
                 w = 100 if key == ' ' else key_w
                 btn = Button(
@@ -247,8 +299,6 @@ class RegistrationSystem:
         return self.fields[self.field_index]
     
     def handle_button_click(self, x, y):
-        """Handle button clicks"""
-        # Navigation buttons
         if self.buttons['up'].is_clicked(x, y):
             if self.field_index > 0:
                 self.field_index -= 1
@@ -269,7 +319,6 @@ class RegistrationSystem:
             self.is_registering = False
             return 'cancel'
         
-        # Keyboard buttons
         for row in self.keyboard_buttons:
             for btn in row:
                 if btn.is_clicked(x, y):
@@ -279,7 +328,6 @@ class RegistrationSystem:
         return None
     
     def update_hover(self, x, y):
-        """Update hover state for all buttons"""
         for btn in self.buttons.values():
             btn.check_hover(x, y)
         for row in self.keyboard_buttons:
@@ -287,60 +335,77 @@ class RegistrationSystem:
                 btn.check_hover(x, y)
     
     def save_registration(self):
-        """Simpan data pendaftaran ke JSON dan foto"""
         full_name = self.registration_data['full_name'].strip()
         nrp = self.registration_data['nrp'].strip()
         rank = self.registration_data['rank'].strip()
         unit = self.registration_data['unit'].strip()
-        
+        code = self.registration_data['code'].replace(" ", "").upper()  # AB, KZE
+
+        # ================= VALIDASI =================
         if not full_name:
             self.failed_message = "Nama Lengkap harus diisi!"
             self.show_registration_failed = True
             self.registration_failed_time = time.time()
-            print(f"❌ {self.failed_message}")
             return False
-        
+
         if self.captured_frame is None:
             self.failed_message = "Foto belum diambil!"
             self.show_registration_failed = True
             self.registration_failed_time = time.time()
-            print(f"❌ {self.failed_message}")
             return False
-        
+
+        if len(code) < 2:
+            self.failed_message = "Kode gesture minimal 2 huruf (contoh: AB atau KZE)"
+            self.show_registration_failed = True
+            self.registration_failed_time = time.time()
+            return False
+
+        if not all('A' <= c <= 'Z' for c in code):
+            self.failed_message = "Kode gesture hanya boleh huruf A-Z (contoh: AB, KZE)"
+            self.show_registration_failed = True
+            self.registration_failed_time = time.time()
+            return False
+
+        # ================= LOAD DATA =================
         name_id = full_name.lower().replace(" ", "_")
-        
+
         if os.path.exists(SOLDIER_DATA_FILE):
             with open(SOLDIER_DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         else:
             data = {}
-        
+
         if name_id in data:
-            self.failed_message = f"Nama '{name_id}' sudah terdaftar!"
+            self.failed_message = f"Nama '{full_name}' sudah terdaftar!"
             self.show_registration_failed = True
             self.registration_failed_time = time.time()
-            print(f"❌ {self.failed_message}")
             return False
-        
+
+        # ================= SIMPAN DATA =================
         data[name_id] = {
-            'name': full_name,
-            'nrp': nrp or 'N/A',
-            'rank': rank or 'N/A',
-            'unit': unit or 'N/A'
+            "name": full_name,
+            "nrp": nrp if nrp else "N/A",
+            "rank": rank if rank else "N/A",
+            "unit": unit if unit else "N/A",
+            "code": code          # SIMPAN TANPA KOMA
         }
-        
+
         with open(SOLDIER_DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        
+
+        # ================= SIMPAN FOTO =================
         person_dir = os.path.join(KNOWN_FACES_DIR, name_id)
         os.makedirs(person_dir, exist_ok=True)
+
         photo_path = os.path.join(person_dir, f"{name_id}.jpg")
         cv2.imwrite(photo_path, self.captured_frame)
-        
-        print(f"✅ Pendaftaran berhasil: {full_name}")
-        print(f"📁 ID: {name_id}")
-        print(f"📁 Foto disimpan: {photo_path}")
-        
+
+        # ================= SUCCESS =================
+        print("✅ PENDAFTARAN BERHASIL")
+        print(f"👤 Nama   : {full_name}")
+        print(f"🔐 Kode   : {code}")
+        print(f"📁 Foto   : {photo_path}")
+
         self.show_registration_success = True
         self.registration_success_time = time.time()
         return True
@@ -348,9 +413,9 @@ class RegistrationSystem:
 # ================== WEAPON ACCESS SYSTEM ==================
 class WeaponAccessSystem:
     def __init__(self):
-        self.current_user = None
-        self.gesture_sequence = []
-        self.gesture_timestamps = []
+        self.current_user = None                # kandidat pemilik kode gesture
+        self.gesture_sequence = []             # list of gesture names
+        self.gesture_timestamps = []           # timestamp masing-masing gesture
         self.face_recognition_active = False
         self.face_recognition_timeout = 0
         self.face_recognition_duration = 8
@@ -358,8 +423,10 @@ class WeaponAccessSystem:
         
         self.last_detected_gesture = None
         self.last_gesture_time = 0
-        self.gesture_cooldown = 0.5
-        self.max_sequence_time = 5.0
+        self.gesture_cooldown = 0.15           # cooldown gesture
+        self.max_sequence_time = 5          # window 30 detik
+        
+        self.gesture_vote_window = deque(maxlen=3)
         
         self.access_granted_time = 0
         self.show_access_granted = False
@@ -369,8 +436,11 @@ class WeaponAccessSystem:
         self.show_sequence_failed = False
         self.face_failed_time = 0
         self.show_face_failed = False
+        
+        self.granted_soldier_info = None
+        
         self.setup_directories()
-
+    
     def setup_directories(self):
         if not os.path.exists(self.screenshot_dir):
             os.makedirs(self.screenshot_dir)
@@ -381,13 +451,13 @@ class WeaponAccessSystem:
                     "Tanggal", "Waktu", "Nama", "NRP", "Pangkat",
                     "Kesatuan", "Gesture Sequence", "Status", "Screenshot Path"
                 ])
-
+    
     def record_access(self, soldier_data):
         current_datetime = datetime.now()
         date_str = current_datetime.strftime("%Y-%m-%d")
         time_str = current_datetime.strftime("%H:%M:%S")
         screenshot_path = self.take_screenshot(soldier_data['name'], date_str, time_str)
-
+        
         access_data = [
             date_str,
             time_str,
@@ -402,67 +472,95 @@ class WeaponAccessSystem:
         with open(ACCESS_RECORDS_FILE, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             writer.writerow(access_data)
-
+        
         print(f"✅ Akses: {soldier_data['name']}")
         self.show_access_granted = True
         self.access_granted_time = time.time()
         return True
-
+    
     def take_screenshot(self, name, date_str, time_str):
         filename = f"access_{name}_{date_str}_{time_str.replace(':', '')}.jpg"
         filepath = os.path.join(self.screenshot_dir, filename)
         return filepath
-
+    
     def process_gesture(self, gesture, confidence, current_time):
+        self.gesture_vote_window.append(gesture)
+        
         if gesture == self.last_detected_gesture:
             return False
         
         if current_time - self.last_gesture_time < self.gesture_cooldown:
             return False
         
-        if gesture and gesture != "neutral" and confidence > 0.5:
+        if len(self.gesture_vote_window) >= 2:
+            vote_count = self.gesture_vote_window.count(gesture)
+            if vote_count < 2:
+                return False
+        
+        if gesture and gesture != "neutral" and confidence > 0.65:
             self.gesture_sequence.append(gesture)
             self.gesture_timestamps.append(current_time)
             self.last_detected_gesture = gesture
             self.last_gesture_time = current_time
             
-            if len(self.gesture_sequence) > 5:
+            if len(self.gesture_sequence) > 20:
                 self.gesture_sequence.pop(0)
                 self.gesture_timestamps.pop(0)
             
             print(f"🔹 {gesture} [{confidence:.2f}]")
             return True
         return False
-
+    
     def check_secret_gesture_sequence(self):
-        if len(self.gesture_sequence) < len(SECRET_GESTURE_SEQUENCE):
-            return False
+        """
+        Cek semua kode prajurit di known_soldier_data.
+        Jika ada kode yang muncul sebagai subsequence di gesture_sequence
+        dengan jarak antar gesture < 5 detik, return (True, soldier_id).
+        """
+        if len(self.gesture_sequence) == 0:
+            return False, None
         
-        recent = self.gesture_sequence[-len(SECRET_GESTURE_SEQUENCE):]
-        recent_times = self.gesture_timestamps[-len(SECRET_GESTURE_SEQUENCE):]
+        seq = self.gesture_sequence
+        times = self.gesture_timestamps
+        MAX_GAP = 5.0
         
-        if recent == SECRET_GESTURE_SEQUENCE:
-            time_diff = recent_times[-1] - recent_times[0]
+        for soldier_id, info in known_soldier_data.items():
+            code_str = info.get('code', '').strip()
+            if not code_str:
+                continue
             
-            if time_diff <= self.max_sequence_time:
-                print(f"✅ Sandi OK! ({time_diff:.2f}s)")
-                return True
-            else:
-                print(f"❌ Terlalu lambat: {time_diff:.2f}s")
-                self.show_sequence_failed = True
-                self.sequence_failed_time = time.time()
-                self.gesture_sequence.clear()
-                self.gesture_timestamps.clear()
-                return False
-        return False
-
+            target = parse_code_string(code_str)   # contoh: ['A','B']
+            k = len(target)
+            if k == 0 or len(seq) < k:
+                continue
+            
+            for start in range(0, len(seq) - k + 1):
+                matched = True
+                prev_time = None
+                for j in range(k):
+                    if seq[start + j] != target[j]:
+                        matched = False
+                        break
+                    t = times[start + j]
+                    if prev_time is not None and (t - prev_time) > MAX_GAP:
+                        matched = False
+                        break
+                    prev_time = t
+                
+                if matched:
+                    self.current_user = soldier_id
+                    print(f"✅ Kode cocok untuk {info.get('name', soldier_id)}: {target}")
+                    return True, soldier_id
+        
+        return False, None
+    
     def activate_face_recognition(self):
         self.face_recognition_active = True
         self.face_recognition_timeout = time.time() + self.face_recognition_duration
         self.show_sequence_alert = True
         self.sequence_detected_time = time.time()
-        print(f"⚠️  SANDI TERDETEKSI!\n")
-
+        print("⚠️  SANDI TERDETEKSI!\n")
+    
     def update_face_recognition_status(self):
         if self.face_recognition_active and time.time() > self.face_recognition_timeout:
             self.face_recognition_active = False
@@ -476,6 +574,8 @@ class WeaponAccessSystem:
         self.gesture_timestamps.clear()
         self.last_detected_gesture = None
         self.last_gesture_time = 0
+        self.gesture_vote_window.clear()
+        self.current_user = None
 
 # ================== FACE RECOGNITION ==================
 def load_soldier_data():
@@ -493,7 +593,7 @@ def load_known_faces():
     if not os.path.exists(KNOWN_FACES_DIR):
         print(f"[WARN] {KNOWN_FACES_DIR} not found")
         return
-        
+    
     for person_name in os.listdir(KNOWN_FACES_DIR):
         person_dir = os.path.join(KNOWN_FACES_DIR, person_name)
         if not os.path.isdir(person_dir):
@@ -546,7 +646,7 @@ def load_gesture_model():
             print("[GESTURE] Model OK")
             return True
         else:
-            print("[ERROR] gesture_model.h5 not found")
+            print("[ERROR] gesture_model_az.h5 not found")
             return False
     except Exception as e:
         print(f"[ERROR] {e}")
@@ -564,7 +664,7 @@ def mouse_callback(event, x, y, flags, param):
 
 # ================== MAIN ==================
 def main():
-    global mouse_clicked
+    global mouse_clicked, SECRET_GESTURE_SEQUENCE
     
     if not load_gesture_model():
         return
@@ -594,13 +694,12 @@ def main():
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     cv2.setMouseCallback(window_name, mouse_callback)
 
-    # Mode selection buttons
     mode_btn_absen = Button(FRAME_W // 2 - 250, FRAME_H // 2 - 50, 200, 100, "MODE ABSEN", (0, 120, 0))
     mode_btn_daftar = Button(FRAME_W // 2 + 50, FRAME_H // 2 - 50, 200, 100, "MODE DAFTAR", (0, 120, 200))
 
     current_frame = None
-    gesture_seq_buffer = []
-    mode = None  # None, "attendance", "registration"
+    gesture_seq_buffer = deque(maxlen=NO_OF_TIMESTEPS)
+    mode = None
 
     while True:
         ret, frame = cap.read()
@@ -644,26 +743,23 @@ def main():
 
         # ===== MODE REGISTRATION =====
         if registration_system.is_registering:
-            # Layout: 20% form (left), 80% camera (right)
             form_width = int(w * 0.2)
             camera_width = w - form_width
             
-            # Draw form background
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, 0), (form_width, h), (40, 40, 40), -1)
             cv2.addWeighted(overlay, 0.95, frame, 0.05, 0, frame)
             cv2.line(frame, (form_width, 0), (form_width, h), (0, 255, 255), 3)
             
-            # Title
             cv2.putText(frame, "PENDAFTARAN", (20, 40), 
                        cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 255), 2)
             
-            # Form fields
             field_labels = {
                 'full_name': 'Nama Lengkap',
                 'nrp': 'NRP',
                 'rank': 'Pangkat',
-                'unit': 'Kesatuan'
+                'unit': 'Kesatuan',
+                'code': 'Kode Gesture'
             }
             
             y_start = 80
@@ -672,11 +768,9 @@ def main():
                 is_active = (registration_system.field_index == idx)
                 color = (0, 255, 0) if is_active else (200, 200, 200)
                 
-                # Label
                 cv2.putText(frame, field_labels[field], (20, y), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 
-                # Input box
                 box_x = 20
                 box_y = y + 5
                 box_w = form_width - 40
@@ -686,26 +780,21 @@ def main():
                     cv2.rectangle(frame, (box_x-2, box_y-2), (box_x + box_w+2, box_y + box_h+2), (0, 255, 255), 2)
                 cv2.rectangle(frame, (box_x, box_y), (box_x + box_w, box_y + box_h), color, 1)
                 
-                # Input text with scroll
                 text = registration_system.registration_data[field]
                 if len(text) > 15:
                     text = "..." + text[-12:]
                 cv2.putText(frame, text, (box_x + 5, box_y + 20), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
             
-            # Draw buttons
             registration_system.update_hover(mouse_x, mouse_y)
             for btn in registration_system.buttons.values():
                 btn.draw(frame)
             
-            # Draw keyboard
             for row in registration_system.keyboard_buttons:
                 for btn in row:
                     btn.draw(frame)
             
-            # Camera preview area
             if registration_system.photo_preview is not None:
-                # Show captured photo
                 preview = registration_system.photo_preview.copy()
                 preview = cv2.flip(preview, 1)
                 preview_h, preview_w = preview.shape[:2]
@@ -721,12 +810,10 @@ def main():
                 cv2.rectangle(frame, (x_offset-3, y_offset-3), 
                             (x_offset+new_w+3, y_offset+new_h+3), (0, 255, 0), 3)
                 
-                # Text overlay
                 cv2.putText(frame, "Foto berhasil diambil!", 
                            (form_width + 50, 50), 
                            cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 255, 0), 2)
             
-            # Countdown
             if registration_system.capture_countdown > 0:
                 countdown_text = str(registration_system.capture_countdown)
                 text_size = cv2.getTextSize(countdown_text, cv2.FONT_HERSHEY_DUPLEX, 6, 6)[0]
@@ -746,11 +833,9 @@ def main():
                     registration_system.photo_preview = current_frame.copy()
                     print("✅ Foto berhasil diambil!")
             
-            # Handle clicks
             if mouse_clicked:
                 result = registration_system.handle_button_click(mouse_x, mouse_y)
                 if result == 'submit':
-                    # Hanya save jika belum dalam proses success/failed
                     if not registration_system.show_registration_success and \
                        not registration_system.show_registration_failed:
                         registration_system.save_registration()
@@ -759,7 +844,6 @@ def main():
                     print("❌ Pendaftaran dibatalkan")
                 mouse_clicked = False
             
-            # Success popup - tunggu selesai baru reload dan reset
             if registration_system.show_registration_success and \
                (current_time - registration_system.registration_success_time) < 5.0:
                 elapsed = current_time - registration_system.registration_success_time
@@ -770,10 +854,9 @@ def main():
             elif registration_system.show_registration_success:
                 registration_system.show_registration_success = False
                 registration_system.is_registering = False
-                load_known_faces()  # Reload faces setelah popup selesai
+                load_known_faces()
                 mode = None
             
-            # Failed popup
             if registration_system.show_registration_failed and \
                (current_time - registration_system.registration_failed_time) < 4.0:
                 elapsed = current_time - registration_system.registration_failed_time
@@ -790,10 +873,9 @@ def main():
                 break
             continue
         
-        # ===== MODE ATTENDANCE (Original) =====
+        # ===== MODE ATTENDANCE =====
         access_system.update_face_recognition_status()
-
-        # Gesture detection
+        
         current_gesture = None
         gesture_confidence = 0.0
         
@@ -810,8 +892,6 @@ def main():
 
             if sum(feat) != 0:
                 gesture_seq_buffer.append(feat)
-                if len(gesture_seq_buffer) > NO_OF_TIMESTEPS:
-                    gesture_seq_buffer.pop(0)
 
             if len(gesture_seq_buffer) == NO_OF_TIMESTEPS:
                 X = np.array(gesture_seq_buffer).reshape(1, NO_OF_TIMESTEPS, -1)
@@ -819,44 +899,56 @@ def main():
                 cls = int(np.argmax(prob))
                 confidence = float(np.max(prob))
                 
-                if confidence > 0.5:
+                if confidence > 0.65:
                     gesture = gesture_labels.get(cls, "Unknown")
                     current_gesture = gesture
                     gesture_confidence = confidence
                     access_system.process_gesture(gesture, confidence, current_time)
 
-        # Check secret sequence
-        if access_system.check_secret_gesture_sequence():
+        matched, soldier_id = access_system.check_secret_gesture_sequence()
+        if matched:
+            code_str = known_soldier_data.get(soldier_id, {}).get('code', '')
+            SECRET_GESTURE_SEQUENCE = parse_code_string(code_str)
             access_system.activate_face_recognition()
             access_system.gesture_sequence.clear()
             access_system.gesture_timestamps.clear()
             gesture_seq_buffer.clear()
 
-        # Face recognition
         face_name = None
         face_confidence = 0.0
 
         if access_system.face_recognition_active:
             face_name, face_confidence = recognize_face(frame)
             if face_name and face_confidence > 60:
-                access_system.current_user = face_name
-                soldier_data = get_soldier_data(face_name)
-                
-                if access_system.record_access(soldier_data):
-                    screenshot_path = access_system.take_screenshot(
-                        face_name,
-                        datetime.now().strftime("%Y-%m-%d"),
-                        datetime.now().strftime("%H:%M:%S")
-                    )
-                    cv2.imwrite(screenshot_path, current_frame)
+                # jika ingin kunci ke pemilik kode:
+                if access_system.current_user and face_name != access_system.current_user:
                     access_system.face_recognition_active = False
+                    access_system.show_face_failed = True
+                    access_system.face_failed_time = time.time()
+                    print("❌ Wajah tidak sesuai pemilik kode")
+                else:
+                    soldier_data = get_soldier_data(face_name)
+                    if access_system.record_access(soldier_data):
+                        screenshot_path = access_system.take_screenshot(
+                            face_name,
+                            datetime.now().strftime("%Y-%m-%d"),
+                            datetime.now().strftime("%H:%M:%S")
+                        )
+                        cv2.imwrite(screenshot_path, current_frame)
+                        access_system.granted_soldier_info = {
+                            'name': soldier_data['name'],
+                            'nrp': soldier_data.get('nrp', 'N/A'),
+                            'rank': soldier_data.get('rank', 'N/A'),
+                            'unit': soldier_data.get('unit', 'N/A'),
+                            'datetime': datetime.now().strftime("%d %B %Y, %H:%M:%S WIB")
+                        }
+                        access_system.face_recognition_active = False
 
-        # Display popups
         if access_system.show_sequence_failed and (current_time - access_system.sequence_failed_time) < 2.5:
             elapsed = current_time - access_system.sequence_failed_time
             progress = elapsed / 2.5
             draw_animated_popup(frame, "SANDI GAGAL!", 
-                              "Terlalu lambat! Max 5 detik",
+                              "Terlalu lambat! Max 30 detik",
                               progress, "failed")
         elif access_system.show_sequence_failed:
             access_system.show_sequence_failed = False
@@ -879,16 +971,16 @@ def main():
         elif access_system.show_sequence_alert:
             access_system.show_sequence_alert = False
         
-        elif access_system.show_access_granted and (current_time - access_system.access_granted_time) < 3.0:
+        elif access_system.show_access_granted and (current_time - access_system.access_granted_time) < 4.0:
             elapsed = current_time - access_system.access_granted_time
-            progress = elapsed / 3.0
+            progress = elapsed / 4.0
             draw_animated_popup(frame, "AKSES DIIZINKAN!", 
-                              f"Selamat datang, {access_system.current_user}",
-                              progress, "success")
+                              f"Selamat datang, {access_system.granted_soldier_info['name']}",
+                              progress, "success", 
+                              soldier_info=access_system.granted_soldier_info)
         elif access_system.show_access_granted:
             access_system.show_access_granted = False
         
-        # Header with back button
         draw_text_with_outline(frame, "MODE: ABSEN",
                     (30, 50), cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 255, 0), 2)
         
@@ -902,8 +994,7 @@ def main():
             gesture_seq_buffer.clear()
             print("\n🔙 Kembali ke menu utama")
             mouse_clicked = False
-
-        # Gesture display
+        
         if current_gesture and current_gesture != "neutral":
             gesture_text = f"Gesture: {current_gesture}"
             draw_text_with_outline(frame, gesture_text,
@@ -911,48 +1002,14 @@ def main():
             
             bar_x, bar_y = 30, 130
             bar_w, bar_h = 300, 15
-            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
-            conf_w = int(bar_w * gesture_confidence)
-            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + conf_w, bar_y + bar_h), (0, 255, 0), -1)
-            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (255, 255, 255), 2)
-            
-            conf_text = f"{gesture_confidence:.1%}"
-            cv2.putText(frame, conf_text, (bar_x + bar_w + 10, bar_y + 12),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        else:
-            draw_text_with_outline(frame, "Gesture: Waiting...",
-                        (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (150, 150, 150), 2)
-
-        # Face status
-        status_y = 200
-        if access_system.face_recognition_active:
-            time_left = int(access_system.face_recognition_timeout - current_time)
-            draw_text_with_outline(frame, f"Face Recognition: AKTIF ({time_left}s)",
-                        (30, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-
-            if face_name:
-                soldier_data = get_soldier_data(face_name)
-                draw_text_with_outline(frame, f"Prajurit: {face_name}",
-                            (30, status_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                draw_text_with_outline(frame, f"NRP: {soldier_data.get('nrp', 'N/A')}",
-                            (30, status_y + 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            else:
-                draw_text_with_outline(frame, "Tampilkan wajah",
-                            (30, status_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-        # Datetime
-        draw_text_with_outline(frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    (w - 350, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), 1)
+            filled_w = int(bar_w * gesture_confidence)
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + filled_w, bar_y + bar_h), (0, 255, 0), -1)
+        
         cv2.imshow(window_name, frame)
-
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif key == ord('r'):
-            access_system.reset()
-            gesture_seq_buffer.clear()
-            print("🔄 Reset")
 
     cap.release()
     cv2.destroyAllWindows()

@@ -919,7 +919,7 @@ def main():
             elapsed = current_time - access_system.access_granted_time
             progress = elapsed / 4.0
             draw_animated_popup(frame, "AKSES DIIZINKAN!", 
-                              f"Selamat datang, {access_system.granted_soldier_info['rank']}",
+                              f"Selamat datang, {access_system.granted_soldier_info['name']}",
                               progress, "success", 
                               soldier_info=access_system.granted_soldier_info)
         elif access_system.show_access_granted:
